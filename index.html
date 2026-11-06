@@ -1,0 +1,104 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAS Trocadores de Calor</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf3f5;color:#152e3a;font:16px system-ui}header{background:#123747;color:white;padding:22px}header div,main{max-width:900px;margin:auto}main{padding:16px}h1,h2{margin:0 0 12px}section{background:white;padding:16px;margin-bottom:14px;border-radius:12px}fieldset{border:1px solid #bfd1d8;border-radius:8px}label{display:block;margin:8px 0}input,select,button{font:inherit;padding:8px;border:1px solid #9fb8c3;border-radius:6px}input,select{display:block;width:100%}button{background:#075b75;color:white;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:12px}dt{font-weight:bold}dd{margin:0 0 8px}#error{color:#9c2020}@media print{body{background:white}header{color:black;background:white}button{display:none}section,fieldset{break-inside:avoid}input,select{border:0;padding:0}}
+</style>
+<header><div><h1>MAS Trocadores de Calor</h1>Trocador a placas · líquidos sem mudança de fase</div></header>
+<main><form id="calc"><section><h2>Projeto</h2><div class="grid">
+<label>Identificação<input name="project" value="Condicionamento de tinta"></label>
+<label>Arranjo<select name="flow"><option value="counter">Contrafluxo</option><option value="parallel">Fluxo paralelo</option></select></label>
+<label>Coeficiente global U (W/m²·K)<input name="u" type="number" min="0.01" step="any" value="350" required></label>
+<label>Área existente (m², opcional)<input name="existing" type="number" min="0.01" step="any" value="7.4"></label></div>
+<small>Valores iniciais ilustrativos. Informe propriedades na temperatura de operação e um U adequado às placas e aos fluidos.</small></section>
+<section><h2>Dados de processo</h2><div class="grid" id="sides"></div><label>Perda de carga máxima admissível no fluido viscoso (bar, opcional)<input name="dp" type="number" min="0.01" step="any"></label>
+<button>Calcular</button></section></form>
+<section id="report" hidden><h2>Relatório de cálculo</h2><p id="basis"></p><dl id="results"></dl><h2>Seleção preliminar de placas</h2><p id="plates"></p><small>Área térmica estimada. A perda de carga e o U final dependem do modelo de placa, da geometria dos canais e das propriedades dos fluidos. Para fluidos não newtonianos, use a viscosidade aparente nas condições de operação.</small><p><button type="button" id="print">Imprimir / salvar em PDF</button></p></section>
+<p id="error" role="alert"></p></main>
+<script>
+const form = document.querySelector('#calc');
+const report = document.querySelector('#report');
+const error = document.querySelector('#error');
+const fluids = [
+  ['Água', 998.2], ['Etanol puro', 789], ['Etilenoglicol puro', 1113],
+  ['Propilenoglicol puro', 1036], ['Glicerina pura', 1260],
+  ['Tinta (exemplo)', 1100]
+];
+const fields = [['q','Vazão (m³/h)',0.001],['rho','Densidade (kg/m³)',0.001],['cp','Calor específico (kJ/kg·K)',0.001],['ti','Temperatura de entrada (°C)'],['mu','Viscosidade (cP)',0.001]];
+for (const [side, title, name, values] of [
+  ['h','Lado quente','Água',[15,998.2,4.18,55,0.5]],
+  ['c','Lado frio','Tinta',[20,1100,3.5,25,5000]]
+]) {
+  const group = document.createElement('fieldset');
+  group.innerHTML = '<legend>'+title+'</legend><label>Fluido<input name="'+side+'name" value="'+name+'" required></label>';
+  fields.forEach(([key,label,min],i) => {
+    group.insertAdjacentHTML('beforeend','<label>'+label+'<input name="'+side+key+'" type="number" step="any" value="'+values[i]+'" '+(min ? 'min="'+min+'"' : '')+' required></label>');
+  });
+  const preset = document.createElement('select');
+  preset.setAttribute('aria-label', 'Fluido de referência — ' + title);
+  preset.append(new Option('Personalizado', ''));
+  fluids.forEach(([label], index) => preset.append(new Option(label, String(index))));
+  preset.value = side === 'h' ? '0' : '5';
+  const selectorLabel = document.createElement('label');
+  selectorLabel.append('Fluido de referência', preset);
+  group.querySelector('legend').after(selectorLabel);
+  const note = document.createElement('small');
+  note.textContent = 'Densidades aproximadas a 20 °C para fluidos puros. Tinta é um exemplo. Ajuste à temperatura, concentração e ficha técnica. Calor específico e viscosidade devem ser preenchidos separadamente.';
+  group.append(note);
+  preset.onchange = () => {
+    if (preset.value === '') return;
+    const [label, density] = fluids[Number(preset.value)];
+    group.querySelector('[name="'+side+'name"]').value = label;
+    group.querySelector('[name="'+side+'rho"]').value = density;
+    for (const property of ['cp','mu']) group.querySelector('[name="'+side+property+'"]').value = '';
+    report.hidden = true;
+  };
+  document.querySelector('#sides').append(group);
+}
+document.querySelector('#sides fieldset:last-child').insertAdjacentHTML('beforeend','<label>Temperatura de saída desejada (°C)<input name="target" type="number" step="any" value="33.5" required></label>');
+const fmt = n => n.toLocaleString('pt-BR',{maximumFractionDigits:2});
+form.addEventListener('input', () => { report.hidden = true; error.textContent = ''; });
+form.onsubmit = event => {
+  event.preventDefault();
+  report.hidden = true;
+  error.textContent = '';
+  const data = new FormData(form);
+  const n = key => Number(data.get(key));
+  const hot = n('hti'), cold = n('cti'), target = n('target');
+  if (hot <= cold || target <= cold || target >= hot) {
+    error.textContent = 'A saída desejada do lado frio deve ficar entre as temperaturas de entrada.';
+    return;
+  }
+  const ch = n('hq')*n('hrho')*n('hcp')/3.6;
+  const cc = n('cq')*n('crho')*n('ccp')/3.6;
+  const duty = cc*(target-cold), hotOut = hot-duty/ch;
+  const counter = data.get('flow') === 'counter';
+  const d1 = counter ? hot-target : hot-cold;
+  const d2 = counter ? hotOut-cold : hotOut-target;
+  const rows = [['Carga térmica para a meta',fmt(duty/1000)+' kW']];
+  if (d1 > 0 && d2 > 0) {
+    const lmtd = d1 === d2 ? d1 : (d1-d2)/Math.log1p((d1-d2)/d2);
+    rows.push(['Área térmica estimada',fmt(duty/(n('u')*lmtd))+' m²'],['Saída do lado quente para a meta',fmt(hotOut)+' °C'],['Diferença média logarítmica',fmt(lmtd)+' K']);
+  } else {
+    rows.push(['Área térmica estimada','Meta inviável com estas vazões, temperaturas e arranjo.']);
+  }
+  if (n('existing') > 0) {
+    const min = Math.min(ch,cc), ratio = min/Math.max(ch,cc);
+    const ntu = n('u')*n('existing')/min;
+    const eff = counter ? (Math.abs(1-ratio)<1e-9 ? ntu/(1+ntu) : -Math.expm1(-ntu*(1-ratio))/(1-ratio*Math.exp(-ntu*(1-ratio)))) : -Math.expm1(-ntu*(1+ratio))/(1+ratio);
+    const actual = eff*min*(hot-cold);
+    rows.push(['Capacidade com '+fmt(n('existing'))+' m²',fmt(actual/1000)+' kW'],['Saídas com a área existente',fmt(hot-actual/ch)+' °C (quente) · '+fmt(cold+actual/cc)+' °C (frio)']);
+  }
+  document.querySelector('#basis').textContent = [data.get('project'),data.get('hname')+' × '+data.get('cname'),counter?'Contrafluxo':'Fluxo paralelo','U = '+fmt(n('u'))+' W/m²·K'].join(' · ');
+  const list = document.querySelector('#results');
+  list.replaceChildren();
+  for (const [label,value] of rows) {
+    const term = document.createElement('dt'), desc = document.createElement('dd');
+    term.textContent = label; desc.textContent = value;
+    list.append(term,desc);
+  }
+  const side = n('hmu') >= n('cmu') ? 'h' : 'c';
+  document.querySelector('#plates').textContent = 'Fluido mais viscoso: '+data.get(side+'name')+' ('+fmt(n(side+'mu'))+' cP). Para reduzir a perda de carga nesse lado, avalie placas de canal largo ou arranjo com mais canais em paralelo. Recalcule a área com o U da configuração escolhida e confirme a perda de carga com o fabricante.'+(n('dp') ? ' Limite informado: '+fmt(n('dp'))+' bar.' : '');
+  report.hidden = false;
+};
+document.querySelector('#print').onclick = () => window.print();
+form.requestSubmit();
+</script></html>
