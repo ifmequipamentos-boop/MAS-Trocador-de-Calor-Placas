@@ -19,7 +19,7 @@
 <label>Vazão desejada do produto (m³/h)<input name="cq" type="number" min="0.001" step="any" value="20" required></label>
 <label>Temperatura desejada na saída (°C)<input name="target" type="number" step="any" value="33.5" required></label>
 </div>
-<button type="button" id="waterExample">Exemplo: água a 60 °C · 10 m³/h</button>
+<button type="button" id="waterExample">Exemplo: água a 50 °C · 30 m³/h</button>
 <small id="exampleNote" hidden>Exemplo com água entrando a 25 °C. Confira as condições reais da fonte de calor e o coeficiente U antes de dimensionar.</small>
 </fieldset><div class="grid" id="sides"></div><label>Perda de carga máxima admissível no fluido viscoso (bar, opcional)<input name="dp" type="number" min="0.01" step="any"></label>
 <button>Calcular</button></section></form>
@@ -42,9 +42,13 @@ for (const [side, title, name, values] of [
   const group = document.createElement('fieldset');
   group.innerHTML = '<legend>'+title+'</legend><label>Fluido<input name="'+side+'name" value="'+name+'" required></label>';
   fields.forEach(([key,label,min],i) => {
-    if (side === 'c' && key === 'q') return;
+    if (key === 'q') return;
     group.insertAdjacentHTML('beforeend','<label>'+label+'<input name="'+side+key+'" type="number" step="any" value="'+values[i]+'" '+(min ? 'min="'+min+'"' : '')+' required></label>');
   });
+  if (side === 'h') group.insertAdjacentHTML('beforeend',
+    '<label>Queda de temperatura da fonte quente (°C)<input name="hotDrop" type="number" min="0.1" step="any" value="10" required></label>' +
+    '<small>Estimativa inicial de 10 °C. Ajuste conforme a temperatura de retorno que sua fonte aceita.</small>' +
+    '<label>Vazão quente disponível (m³/h, opcional)<input name="availableHot" type="number" min="0.001" step="any"></label>');
   const preset = document.createElement('select');
   preset.setAttribute('aria-label', 'Fluido de referência — ' + title);
   preset.append(new Option('Personalizado', ''));
@@ -70,7 +74,7 @@ for (const [side, title, name, values] of [
 document.querySelector('#waterExample').onclick = () => {
   const coldSide = document.querySelector('#sides fieldset:last-child');
   coldSide.querySelector('select').value = '0';
-  const values = {cname:'Água', crho:998.2, ccp:4.18, cti:25, cmu:1, cq:10, target:60};
+  const values = {cname:'Água', crho:998.2, ccp:4.18, cti:25, cmu:1, cq:30, target:50};
   if (form.elements.hotType.value === 'liquid' && form.elements.hname.value === 'Água') {
     values.hti = Math.max(80, Number(form.elements.hti.value));
   }
@@ -126,9 +130,12 @@ form.onsubmit = event => {
     error.textContent = 'A saída desejada do lado frio deve ficar entre as temperaturas de entrada.';
     return;
   }
-  const ch = steam ? Infinity : n('hq')*n('hrho')*n('hcp')/3.6;
   const cc = n('cq')*n('crho')*n('ccp')/3.6;
-  const duty = cc*(target-cold), hotOut = hot-duty/ch;
+  const duty = cc*(target-cold);
+  const hotOut = steam ? hot : hot-n('hotDrop');
+  const requiredHot = steam ? 0 : duty*3.6/(n('hrho')*n('hcp')*n('hotDrop'));
+  const availableHot = n('availableHot');
+  const ch = steam ? Infinity : (availableHot || requiredHot)*n('hrho')*n('hcp')/3.6;
   const counter = data.get('flow') === 'counter';
   const d1 = counter ? hot-target : hot-cold;
   const d2 = counter ? hotOut-cold : hotOut-target;
@@ -142,6 +149,11 @@ form.onsubmit = event => {
   );
   if (d1 > 0 && d2 > 0) {
     const lmtd = d1 === d2 ? d1 : (d1-d2)/Math.log1p((d1-d2)/d2);
+    if (!steam) {
+      rows.push(['Vazão necessária da fonte quente',fmt(requiredHot)+' m³/h de '+data.get('hname')],
+        ['Queda de temperatura usada na fonte quente',fmt(n('hotDrop'))+' °C']);
+      if (availableHot) rows.push(['Comparação com a vazão disponível',fmt(availableHot)+' m³/h · '+(availableHot >= requiredHot ? 'suficiente para a queda informada' : 'abaixo do necessário para a queda informada')]);
+    }
     rows.push(['Área térmica estimada',fmt(duty/(n('u')*lmtd))+' m²'],[steam ? 'Temperatura do condensado no modelo' : 'Saída do lado quente para a meta',fmt(hotOut)+' °C'],['Diferença média logarítmica',fmt(lmtd)+' K']);
   } else {
     rows.push(['Área térmica estimada','Meta inviável com estas vazões, temperaturas e arranjo.']);
@@ -151,6 +163,7 @@ form.onsubmit = event => {
     const ntu = n('u')*n('existing')/min;
     const eff = counter ? (Math.abs(1-ratio)<1e-9 ? ntu/(1+ntu) : -Math.expm1(-ntu*(1-ratio))/(1-ratio*Math.exp(-ntu*(1-ratio)))) : -Math.expm1(-ntu*(1+ratio))/(1+ratio);
     const actual = eff*min*(hot-cold);
+    if (!steam) rows.push(['Vazão quente usada na verificação da área existente',fmt(availableHot || requiredHot)+' m³/h']);
     if (steam) rows.push(['Consumo de vapor com a área existente',fmt(actual*3.6/steam[2])+' kg/h']);
     rows.push(['Capacidade com '+fmt(n('existing'))+' m²',fmt(actual/1000)+' kW'],['Saídas com a área existente',fmt(hot-actual/ch)+' °C (quente) · '+fmt(cold+actual/cc)+' °C (frio)']);
   }
