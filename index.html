@@ -14,7 +14,14 @@
 <label>Informar por<select name="steamMode"><option value="g">Pressão manométrica (bar g)</option><option value="a">Pressão absoluta (bar a)</option><option value="t">Temperatura de saturação (°C)</option></select></label>
 <label><span id="steamLabel"></span><input name="steamValue" type="number" step="any" required></label>
 <small>Faixa aproximada de 0 a 7 bar g, à pressão atmosférica padrão. Use a pressão no trocador. A estimativa considera condensação à pressão constante.</small></fieldset>
-<div class="grid" id="sides"></div><label>Perda de carga máxima admissível no fluido viscoso (bar, opcional)<input name="dp" type="number" min="0.01" step="any"></label>
+<fieldset><legend>Meta do processo</legend>
+<div class="grid">
+<label>Vazão desejada do produto (m³/h)<input name="cq" type="number" min="0.001" step="any" value="20" required></label>
+<label>Temperatura desejada na saída (°C)<input name="target" type="number" step="any" value="33.5" required></label>
+</div>
+<button type="button" id="waterExample">Exemplo: água a 60 °C · 10 m³/h</button>
+<small id="exampleNote" hidden>Exemplo com água entrando a 25 °C. Confira as condições reais da fonte de calor e o coeficiente U antes de dimensionar.</small>
+</fieldset><div class="grid" id="sides"></div><label>Perda de carga máxima admissível no fluido viscoso (bar, opcional)<input name="dp" type="number" min="0.01" step="any"></label>
 <button>Calcular</button></section></form>
 <section id="report" hidden><h2>Relatório de cálculo</h2><p id="basis"></p><dl id="results"></dl><h2>Seleção preliminar de placas</h2><p id="plates"></p><small>Área térmica estimada. A perda de carga e o U final dependem do modelo de placa, da geometria dos canais e das propriedades dos fluidos. Para fluidos não newtonianos, use a viscosidade aparente nas condições de operação.</small><p><button type="button" id="print">Imprimir / salvar em PDF</button></p></section>
 <p id="error" role="alert"></p></main>
@@ -35,6 +42,7 @@ for (const [side, title, name, values] of [
   const group = document.createElement('fieldset');
   group.innerHTML = '<legend>'+title+'</legend><label>Fluido<input name="'+side+'name" value="'+name+'" required></label>';
   fields.forEach(([key,label,min],i) => {
+    if (side === 'c' && key === 'q') return;
     group.insertAdjacentHTML('beforeend','<label>'+label+'<input name="'+side+key+'" type="number" step="any" value="'+values[i]+'" '+(min ? 'min="'+min+'"' : '')+' required></label>');
   });
   const preset = document.createElement('select');
@@ -58,7 +66,18 @@ for (const [side, title, name, values] of [
   };
   document.querySelector('#sides').append(group);
 }
-document.querySelector('#sides fieldset:last-child').insertAdjacentHTML('beforeend','<label>Temperatura de saída desejada (°C)<input name="target" type="number" step="any" value="33.5" required></label>');
+
+document.querySelector('#waterExample').onclick = () => {
+  const coldSide = document.querySelector('#sides fieldset:last-child');
+  coldSide.querySelector('select').value = '0';
+  const values = {cname:'Água', crho:998.2, ccp:4.18, cti:25, cmu:1, cq:10, target:60};
+  if (form.elements.hotType.value === 'liquid' && form.elements.hname.value === 'Água') {
+    values.hti = Math.max(80, Number(form.elements.hti.value));
+  }
+  for (const [name,value] of Object.entries(values)) form.elements[name].value = value;
+  document.querySelector('#exampleNote').hidden = false;
+  form.requestSubmit();
+};
 const steamTable = [[0,100,2257],[1,120,2201],[2,134,2163],[3,144,2133],[4,152,2108],[5,159,2086],[6,165,2066],[7,170,2048]];
 function steamProperties(mode, value) {
   const column = mode === 't' ? 1 : 0;
@@ -113,7 +132,10 @@ form.onsubmit = event => {
   const counter = data.get('flow') === 'counter';
   const d1 = counter ? hot-target : hot-cold;
   const d2 = counter ? hotOut-cold : hotOut-target;
-  const rows = [['Carga térmica para a meta',fmt(duty/1000)+' kW']];
+  const rows = [
+    ['Meta do processo',data.get('cname')+' · '+fmt(n('cq'))+' m³/h · '+fmt(cold)+' → '+fmt(target)+' °C'],
+    ['Carga térmica para a meta',fmt(duty/1000)+' kW']
+  ];
   if (steam) rows.push(
     ['Pressão e temperatura de saturação',fmt(steam[0])+' bar g · '+fmt(steam[0]+1.01325)+' bar a · '+fmt(hot)+' °C'],
     ['Consumo de vapor para a meta',fmt(duty*3.6/steam[2])+' kg/h']
