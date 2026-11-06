@@ -2,14 +2,19 @@
 <style>
 *{box-sizing:border-box}body{margin:0;background:#edf3f5;color:#152e3a;font:16px system-ui}header{background:#123747;color:white;padding:22px}header div,main{max-width:900px;margin:auto}main{padding:16px}h1,h2{margin:0 0 12px}section{background:white;padding:16px;margin-bottom:14px;border-radius:12px}fieldset{border:1px solid #bfd1d8;border-radius:8px}label{display:block;margin:8px 0}input,select,button{font:inherit;padding:8px;border:1px solid #9fb8c3;border-radius:6px}input,select{display:block;width:100%}button{background:#075b75;color:white;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:12px}dt{font-weight:bold}dd{margin:0 0 8px}#error{color:#9c2020}@media print{body{background:white}header{color:black;background:white}button{display:none}section,fieldset{break-inside:avoid}input,select{border:0;padding:0}}
 </style>
-<header><div><h1>MAS Trocadores de Calor</h1>Trocador a placas · líquidos sem mudança de fase</div></header>
+<header><div><h1>MAS Trocadores de Calor</h1>Trocador a placas · líquido × líquido ou vapor saturado × líquido</div></header>
 <main><form id="calc"><section><h2>Projeto</h2><div class="grid">
 <label>Identificação<input name="project" value="Condicionamento de tinta"></label>
 <label>Arranjo<select name="flow"><option value="counter">Contrafluxo</option><option value="parallel">Fluxo paralelo</option></select></label>
 <label>Coeficiente global U (W/m²·K)<input name="u" type="number" min="0.01" step="any" value="350" required></label>
 <label>Área existente (m², opcional)<input name="existing" type="number" min="0.01" step="any" value="7.4"></label></div>
 <small>Valores iniciais ilustrativos. Informe propriedades na temperatura de operação e um U adequado às placas e aos fluidos.</small></section>
-<section><h2>Dados de processo</h2><div class="grid" id="sides"></div><label>Perda de carga máxima admissível no fluido viscoso (bar, opcional)<input name="dp" type="number" min="0.01" step="any"></label>
+<section><h2>Dados de processo</h2><label>Tipo de fluido quente<select name="hotType"><option value="liquid">Líquido</option><option value="steam">Vapor saturado</option></select></label>
+<fieldset id="steam" hidden disabled><legend>Vapor saturado seco</legend>
+<label>Informar por<select name="steamMode"><option value="g">Pressão manométrica (bar g)</option><option value="a">Pressão absoluta (bar a)</option><option value="t">Temperatura de saturação (°C)</option></select></label>
+<label><span id="steamLabel"></span><input name="steamValue" type="number" step="any" required></label>
+<small>Faixa aproximada de 0 a 7 bar g, à pressão atmosférica padrão. Use a pressão no trocador. A estimativa considera condensação à pressão constante.</small></fieldset>
+<div class="grid" id="sides"></div><label>Perda de carga máxima admissível no fluido viscoso (bar, opcional)<input name="dp" type="number" min="0.01" step="any"></label>
 <button>Calcular</button></section></form>
 <section id="report" hidden><h2>Relatório de cálculo</h2><p id="basis"></p><dl id="results"></dl><h2>Seleção preliminar de placas</h2><p id="plates"></p><small>Área térmica estimada. A perda de carga e o U final dependem do modelo de placa, da geometria dos canais e das propriedades dos fluidos. Para fluidos não newtonianos, use a viscosidade aparente nas condições de operação.</small><p><button type="button" id="print">Imprimir / salvar em PDF</button></p></section>
 <p id="error" role="alert"></p></main>
@@ -54,6 +59,35 @@ for (const [side, title, name, values] of [
   document.querySelector('#sides').append(group);
 }
 document.querySelector('#sides fieldset:last-child').insertAdjacentHTML('beforeend','<label>Temperatura de saída desejada (°C)<input name="target" type="number" step="any" value="33.5" required></label>');
+const steamTable = [[0,100,2257],[1,120,2201],[2,134,2163],[3,144,2133],[4,152,2108],[5,159,2086],[6,165,2066],[7,170,2048]];
+function steamProperties(mode, value) {
+  const column = mode === 't' ? 1 : 0;
+  const input = mode === 'a' ? value - 1.01325 : value;
+  const i = steamTable.findIndex(row => row[column] >= input - 1e-10);
+  if (i < 0 || input < steamTable[0][column] - 1e-10) return null;
+  const upper = steamTable[i], lower = steamTable[Math.max(i-1,0)];
+  const fraction = i ? (input-lower[column])/(upper[column]-lower[column]) : 0;
+  return lower.map((v,j) => v + fraction*(upper[j]-v));
+}
+const steamInputs = {
+  g: ['Pressão manométrica (bar g)',0,7,3.5],
+  a: ['Pressão absoluta (bar a)',1.01325,8.01325,4.51325],
+  t: ['Temperatura de saturação (°C)',100,170,148]
+};
+function updateSteamMode() {
+  const [label,min,max,value] = steamInputs[form.elements.steamMode.value];
+  document.querySelector('#steamLabel').textContent = label;
+  Object.assign(form.elements.steamValue,{min,max,value});
+}
+form.elements.steamMode.onchange = updateSteamMode;
+form.elements.hotType.onchange = () => {
+  const steam = form.elements.hotType.value === 'steam';
+  const hotSide = document.querySelector('#sides fieldset');
+  hotSide.hidden = hotSide.disabled = steam;
+  const steamSide = document.querySelector('#steam');
+  steamSide.hidden = steamSide.disabled = !steam;
+};
+updateSteamMode();
 const fmt = n => n.toLocaleString('pt-BR',{maximumFractionDigits:2});
 form.addEventListener('input', () => { report.hidden = true; error.textContent = ''; });
 form.onsubmit = event => {
@@ -62,21 +96,31 @@ form.onsubmit = event => {
   error.textContent = '';
   const data = new FormData(form);
   const n = key => Number(data.get(key));
-  const hot = n('hti'), cold = n('cti'), target = n('target');
+  const steamMode = data.get('hotType') === 'steam';
+  const steam = steamMode ? steamProperties(data.get('steamMode'), n('steamValue')) : null;
+  if (steamMode && !steam) {
+    error.textContent = 'Informe uma condição dentro da faixa de saturação indicada.';
+    return;
+  }
+  const hot = steam ? steam[1] : n('hti'), cold = n('cti'), target = n('target');
   if (hot <= cold || target <= cold || target >= hot) {
     error.textContent = 'A saída desejada do lado frio deve ficar entre as temperaturas de entrada.';
     return;
   }
-  const ch = n('hq')*n('hrho')*n('hcp')/3.6;
+  const ch = steam ? Infinity : n('hq')*n('hrho')*n('hcp')/3.6;
   const cc = n('cq')*n('crho')*n('ccp')/3.6;
   const duty = cc*(target-cold), hotOut = hot-duty/ch;
   const counter = data.get('flow') === 'counter';
   const d1 = counter ? hot-target : hot-cold;
   const d2 = counter ? hotOut-cold : hotOut-target;
   const rows = [['Carga térmica para a meta',fmt(duty/1000)+' kW']];
+  if (steam) rows.push(
+    ['Pressão e temperatura de saturação',fmt(steam[0])+' bar g · '+fmt(steam[0]+1.01325)+' bar a · '+fmt(hot)+' °C'],
+    ['Consumo de vapor para a meta',fmt(duty*3.6/steam[2])+' kg/h']
+  );
   if (d1 > 0 && d2 > 0) {
     const lmtd = d1 === d2 ? d1 : (d1-d2)/Math.log1p((d1-d2)/d2);
-    rows.push(['Área térmica estimada',fmt(duty/(n('u')*lmtd))+' m²'],['Saída do lado quente para a meta',fmt(hotOut)+' °C'],['Diferença média logarítmica',fmt(lmtd)+' K']);
+    rows.push(['Área térmica estimada',fmt(duty/(n('u')*lmtd))+' m²'],[steam ? 'Temperatura do condensado no modelo' : 'Saída do lado quente para a meta',fmt(hotOut)+' °C'],['Diferença média logarítmica',fmt(lmtd)+' K']);
   } else {
     rows.push(['Área térmica estimada','Meta inviável com estas vazões, temperaturas e arranjo.']);
   }
@@ -85,9 +129,10 @@ form.onsubmit = event => {
     const ntu = n('u')*n('existing')/min;
     const eff = counter ? (Math.abs(1-ratio)<1e-9 ? ntu/(1+ntu) : -Math.expm1(-ntu*(1-ratio))/(1-ratio*Math.exp(-ntu*(1-ratio)))) : -Math.expm1(-ntu*(1+ratio))/(1+ratio);
     const actual = eff*min*(hot-cold);
+    if (steam) rows.push(['Consumo de vapor com a área existente',fmt(actual*3.6/steam[2])+' kg/h']);
     rows.push(['Capacidade com '+fmt(n('existing'))+' m²',fmt(actual/1000)+' kW'],['Saídas com a área existente',fmt(hot-actual/ch)+' °C (quente) · '+fmt(cold+actual/cc)+' °C (frio)']);
   }
-  document.querySelector('#basis').textContent = [data.get('project'),data.get('hname')+' × '+data.get('cname'),counter?'Contrafluxo':'Fluxo paralelo','U = '+fmt(n('u'))+' W/m²·K'].join(' · ');
+  document.querySelector('#basis').textContent = [data.get('project'),(steam ? 'Vapor saturado' : data.get('hname'))+' × '+data.get('cname'),counter?'Contrafluxo':'Fluxo paralelo','U = '+fmt(n('u'))+' W/m²·K'].join(' · ');
   const list = document.querySelector('#results');
   list.replaceChildren();
   for (const [label,value] of rows) {
@@ -95,8 +140,8 @@ form.onsubmit = event => {
     term.textContent = label; desc.textContent = value;
     list.append(term,desc);
   }
-  const side = n('hmu') >= n('cmu') ? 'h' : 'c';
-  document.querySelector('#plates').textContent = 'Fluido mais viscoso: '+data.get(side+'name')+' ('+fmt(n(side+'mu'))+' cP). Para reduzir a perda de carga nesse lado, avalie placas de canal largo ou arranjo com mais canais em paralelo. Recalcule a área com o U da configuração escolhida e confirme a perda de carga com o fabricante.'+(n('dp') ? ' Limite informado: '+fmt(n('dp'))+' bar.' : '');
+  const side = !steam && n('hmu') >= n('cmu') ? 'h' : 'c';
+  document.querySelector('#plates').textContent = (steam ? 'Fluido do lado líquido: ' : 'Fluido mais viscoso: ')+data.get(side+'name')+' ('+fmt(n(side+'mu'))+' cP). Para reduzir a perda de carga nesse lado, avalie placas de canal largo ou arranjo com mais canais em paralelo. Recalcule a área com o U da configuração escolhida e confirme a perda de carga com o fabricante.'+(n('dp') ? ' Limite informado: '+fmt(n('dp'))+' bar.' : '');
   report.hidden = false;
 };
 document.querySelector('#print').onclick = () => window.print();
